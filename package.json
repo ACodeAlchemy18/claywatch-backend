@@ -11,8 +11,7 @@
   "license": "ISC",
   "type": "commonjs",
   "dependencies": {
-    "@anthropic-ai/sdk": "^0.98.0",
-    "youtube-caption-extractor": "^1.10.2"
+    "@anthropic-ai/sdk": "^0.98.0"
   },
   "devDependencies": {
     "@types/node": "^25.9.1",

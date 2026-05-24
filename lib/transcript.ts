@@ -1,10 +1,5 @@
 // ═══════════════════════════════════════════════════
-// SECTION 1: IMPORTS
-// ═══════════════════════════════════════════════════
-import { getSubtitles } from 'youtube-caption-extractor';
-
-// ═══════════════════════════════════════════════════
-// SECTION 2: TYPES
+// SECTION 1: TYPES
 // ═══════════════════════════════════════════════════
 export type TranscriptLine = {
   text: string;
@@ -21,47 +16,71 @@ export type TranscriptResult = {
 };
 
 // ═══════════════════════════════════════════════════
-// SECTION 3: FETCH + NORMALIZE TRANSCRIPT
+// SECTION 2: FETCH TRANSCRIPT VIA SUPADATA
 // ═══════════════════════════════════════════════════
-// youtube-caption-extractor is actively maintained and handles
-// auto-generated captions properly (unlike older libraries).
+// Supadata is a paid service that handles YouTube transcript fetching
+// reliably from cloud servers (where direct YouTube scraping is blocked).
+//
+// Free tier: 100 credits/month. Each transcript fetch = 1 credit.
+// We CACHE results in Firebase so each unique video uses only 1 credit ever.
+//
+// Docs: https://docs.supadata.ai/youtube/transcript
 export async function fetchTranscript(youtubeId: string): Promise<TranscriptResult> {
   if (!youtubeId || typeof youtubeId !== 'string') {
     throw new Error('Invalid youtubeId');
   }
 
-  let raw: any[] | null = null;
-  let lastError: any = null;
-
-  // Try English (manual first, auto-generated fallback is automatic in this lib)
-  try {
-    raw = await getSubtitles({ videoID: youtubeId, lang: 'en' });
-  } catch (err) {
-    lastError = err;
+  const apiKey = process.env.SUPADATA_API_KEY;
+  if (!apiKey) {
+    throw new Error('SUPADATA_API_KEY not configured on server.');
   }
 
-  // If nothing came back, try without specifying lang (gets video's primary lang)
-  if (!raw || raw.length === 0) {
-    try {
-      raw = await getSubtitles({ videoID: youtubeId, lang: '' });
-    } catch (err) {
-      lastError = err;
+  // Call Supadata's transcript endpoint
+  // Query params:
+  //   - videoId: the YouTube video ID
+  //   - text=true: returns parsed segments with timestamps
+  const url = `https://api.supadata.ai/v1/youtube/transcript?videoId=${encodeURIComponent(youtubeId)}&text=false`;
+
+  const response = await fetch(url, {
+    method: 'GET',
+    headers: {
+      'x-api-key': apiKey,
+    },
+  });
+
+  if (!response.ok) {
+    const errBody = await response.text().catch(() => '');
+    if (response.status === 404) {
+      throw new Error(
+        "This video doesn't have captions available. Try another video!",
+      );
     }
-  }
-
-  if (!raw || raw.length === 0) {
+    if (response.status === 429) {
+      throw new Error(
+        'Quiz service is busy right now. Try again in a moment.',
+      );
+    }
     throw new Error(
-      "This video doesn't have captions available. Sparky needs captions to make quizzes! Try another video.",
+      `Transcript service error (${response.status}): ${errBody.slice(0, 200)}`,
     );
   }
 
-  // Library shape: { start: string, dur: string, text: string }
-  const transcript: TranscriptLine[] = raw
-    .filter((line: any) => line && line.text && String(line.text).trim().length > 0)
-    .map((line: any) => ({
-      text: String(line.text).trim(),
-      offset: Math.round(parseFloat(line.start || '0') * 1000),
-      duration: Math.round(parseFloat(line.dur || '0') * 1000),
+  const data = await response.json();
+
+  // Supadata returns: { content: [{ text, offset, duration, lang }], lang, availableLangs }
+  const segments = data.content;
+  if (!Array.isArray(segments) || segments.length === 0) {
+    throw new Error("This video doesn't have captions available.");
+  }
+
+  // Normalize to our shape
+  // Supadata returns offset/duration already in milliseconds
+  const transcript: TranscriptLine[] = segments
+    .filter((seg: any) => seg && seg.text && String(seg.text).trim().length > 0)
+    .map((seg: any) => ({
+      text: String(seg.text).trim(),
+      offset: Math.round(Number(seg.offset) || 0),
+      duration: Math.round(Number(seg.duration) || 0),
     }));
 
   if (transcript.length === 0) {
@@ -73,7 +92,7 @@ export async function fetchTranscript(youtubeId: string): Promise<TranscriptResu
     (lastLine.offset + lastLine.duration) / 1000,
   );
 
-  // Bail out for very long videos (Vercel 10s function timeout)
+  // Vercel free tier 10-sec function timeout — bail for very long videos
   if (durationSeconds > 1800) {
     throw new Error(
       'This video is too long for quizzes right now. Try a video under 30 minutes!',
@@ -92,7 +111,7 @@ export async function fetchTranscript(youtubeId: string): Promise<TranscriptResu
 }
 
 // ═══════════════════════════════════════════════════
-// SECTION 4: COMPUTE CHECKPOINTS BY VIDEO LENGTH
+// SECTION 3: COMPUTE CHECKPOINTS BY VIDEO LENGTH
 // ═══════════════════════════════════════════════════
 export type Checkpoint = {
   timestampSeconds: number;
@@ -121,7 +140,7 @@ export function computeCheckpoints(durationSeconds: number): Checkpoint[] {
 }
 
 // ═══════════════════════════════════════════════════
-// SECTION 5: SPLIT TRANSCRIPT BY CHECKPOINT
+// SECTION 4: SPLIT TRANSCRIPT BY CHECKPOINT
 // ═══════════════════════════════════════════════════
 export function splitTranscriptForCheckpoints(
   transcript: TranscriptLine[],
