@@ -12,7 +12,7 @@
   "type": "commonjs",
   "dependencies": {
     "@anthropic-ai/sdk": "^0.98.0",
-    "youtube-captions-scraper": "^2.0.3"
+    "youtube-caption-extractor": "^1.10.2"
   },
   "devDependencies": {
     "@types/node": "^25.9.1",

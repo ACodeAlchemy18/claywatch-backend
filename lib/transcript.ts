@@ -1,7 +1,7 @@
 // ═══════════════════════════════════════════════════
 // SECTION 1: IMPORTS
 // ═══════════════════════════════════════════════════
-import { getSubtitles } from 'youtube-captions-scraper';
+import { getSubtitles } from 'youtube-caption-extractor';
 
 // ═══════════════════════════════════════════════════
 // SECTION 2: TYPES
@@ -23,49 +23,62 @@ export type TranscriptResult = {
 // ═══════════════════════════════════════════════════
 // SECTION 3: FETCH + NORMALIZE TRANSCRIPT
 // ═══════════════════════════════════════════════════
-// youtube-captions-scraper tries multiple lang codes to find captions.
-// It handles auto-generated captions better than youtube-transcript.
+// youtube-caption-extractor is actively maintained and handles
+// auto-generated captions properly (unlike older libraries).
 export async function fetchTranscript(youtubeId: string): Promise<TranscriptResult> {
   if (!youtubeId || typeof youtubeId !== 'string') {
     throw new Error('Invalid youtubeId');
   }
 
-  // Try English first, then other common langs as fallbacks
-  const langsToTry = ['en', 'en-US', 'en-GB', 'a.en']; // 'a.en' = auto-generated English
-
   let raw: any[] | null = null;
   let lastError: any = null;
 
-  for (const lang of langsToTry) {
+  // Try English (manual first, auto-generated fallback is automatic in this lib)
+  try {
+    raw = await getSubtitles({ videoID: youtubeId, lang: 'en' });
+  } catch (err) {
+    lastError = err;
+  }
+
+  // If nothing came back, try without specifying lang (gets video's primary lang)
+  if (!raw || raw.length === 0) {
     try {
-      raw = await getSubtitles({ videoID: youtubeId, lang });
-      if (raw && raw.length > 0) break;
+      raw = await getSubtitles({ videoID: youtubeId, lang: '' });
     } catch (err) {
       lastError = err;
-      // Try next lang
     }
   }
 
   if (!raw || raw.length === 0) {
     throw new Error(
-      lastError?.message ||
-        "This video doesn't have captions. Sparky needs captions to make quizzes!",
+      "This video doesn't have captions available. Sparky needs captions to make quizzes! Try another video.",
     );
   }
 
-  // youtube-captions-scraper shape:
-  //   { start: '0.16', dur: '4.32', text: 'hello world' }
-  // Convert to our shape (milliseconds, normalized)
-  const transcript: TranscriptLine[] = raw.map((line: any) => ({
-    text: String(line.text || '').trim(),
-    offset: Math.round(parseFloat(line.start || '0') * 1000),
-    duration: Math.round(parseFloat(line.dur || '0') * 1000),
-  }));
+  // Library shape: { start: string, dur: string, text: string }
+  const transcript: TranscriptLine[] = raw
+    .filter((line: any) => line && line.text && String(line.text).trim().length > 0)
+    .map((line: any) => ({
+      text: String(line.text).trim(),
+      offset: Math.round(parseFloat(line.start || '0') * 1000),
+      duration: Math.round(parseFloat(line.dur || '0') * 1000),
+    }));
+
+  if (transcript.length === 0) {
+    throw new Error('Captions exist but appear empty for this video.');
+  }
 
   const lastLine = transcript[transcript.length - 1];
   const durationSeconds = Math.round(
     (lastLine.offset + lastLine.duration) / 1000,
   );
+
+  // Bail out for very long videos (Vercel 10s function timeout)
+  if (durationSeconds > 1800) {
+    throw new Error(
+      'This video is too long for quizzes right now. Try a video under 30 minutes!',
+    );
+  }
 
   const fullText = transcript.map((l) => l.text).join(' ');
 
