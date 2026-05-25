@@ -49,10 +49,20 @@ function setCorsHeaders(res: VercelResponse) {
 //   - Be educational, not nitpicky
 //   - Always have 4 options with exactly 1 correct
 //   - Include a Sparky-style explanation for the correct answer
-function buildPrompt(transcriptSection: string, questionCount: number, ageGroup: string): string {
+//////
+
+function buildPrompt(transcriptSection: string, questionCount: number, ageGroup: string, checkpointIdx: number, totalCheckpoints: number): string {
+  // Vary the question style per checkpoint so questions feel different
+  const styleHints = [
+    'Focus on the MAIN IDEA and key concepts.',
+    'Focus on SPECIFIC DETAILS, names, or numbers mentioned.',
+    'Focus on WHY things happen, cause-and-effect, or relationships.',
+  ];
+  const styleHint = styleHints[checkpointIdx % styleHints.length];
+
   return `You are Sparky, a friendly AI fox tutor for kids on a learning app called ClayWatch.
 
-A kid (age group: ${ageGroup}) just watched this part of an educational video. Generate ${questionCount} multiple-choice quiz questions that test their understanding of the content below.
+A kid (age group: ${ageGroup}) just watched part ${checkpointIdx + 1} of ${totalCheckpoints} of an educational video. Generate ${questionCount} multiple-choice quiz questions that test their understanding of the content below.
 
 CONTENT THE KID WATCHED:
 """
@@ -62,11 +72,13 @@ ${transcriptSection}
 REQUIREMENTS:
 1. Each question must be based ONLY on the content above
 2. Each question has exactly 4 answer options
-3. Exactly 1 option is correct (others are plausible distractors, not silly)
+3. Exactly 1 option is correct (others are plausible but clearly wrong distractors)
 4. Use kid-friendly language appropriate for ${ageGroup} years old
 5. For each correct answer, include a warm Sparky-style explanation (1-2 sentences) — like a fox tutor encouraging the kid
-6. Avoid questions that are too obvious or too obscure
-7. Questions should test understanding, not memorization of trivia
+6. ${styleHint}
+7. Make each question UNIQUELY different — no two questions should test the same fact or use similar phrasing
+8. Avoid questions that are too obvious or too obscure
+9. Questions should test UNDERSTANDING, not memorization of trivia
 
 OUTPUT FORMAT: Reply with ONLY a JSON array, nothing else. No markdown, no preamble. Exactly this shape:
 
@@ -81,7 +93,6 @@ OUTPUT FORMAT: Reply with ONLY a JSON array, nothing else. No markdown, no pream
 
 Generate ${questionCount} questions now:`;
 }
-
 // ═══════════════════════════════════════════════════
 // SECTION 5: CALL CLAUDE
 // ═══════════════════════════════════════════════════
@@ -90,14 +101,16 @@ async function generateQuestionsForSection(
   transcriptSection: string,
   questionCount: number,
   ageGroup: string,
+  checkpointIdx: number,
+  totalCheckpoints: number,
 ): Promise<QuizQuestion[]> {
   const message = await anthropic.messages.create({
-    model: 'claude-haiku-4-5',     // fastest + cheapest, plenty smart for this
+    model: 'claude-haiku-4-5',
     max_tokens: 2048,
     messages: [
       {
         role: 'user',
-        content: buildPrompt(transcriptSection, questionCount, ageGroup),
+        content: buildPrompt(transcriptSection, questionCount, ageGroup, checkpointIdx, totalCheckpoints),
       },
     ],
   });
@@ -180,16 +193,18 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     // 4. Generate quizzes for each section, in parallel for speed
     const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 
-    const questionLists = await Promise.all(
-      sections.map((section, i) =>
-        generateQuestionsForSection(
-          anthropic,
-          section,
-          checkpoints[i].questionCount,
-          ageGroup,
-        ),
-      ),
-    );
+  const questionLists = await Promise.all(
+  sections.map((section, i) =>
+    generateQuestionsForSection(
+      anthropic,
+      section,
+      checkpoints[i].questionCount,
+      ageGroup,
+      i,
+      checkpoints.length,
+    ),
+  ),
+);
 
     // 5. Build the response
     const quizCheckpoints: QuizCheckpoint[] = checkpoints.map((cp, i) => ({
